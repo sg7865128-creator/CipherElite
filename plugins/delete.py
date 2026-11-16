@@ -23,10 +23,8 @@ def init(client_instance):
 async def register_commands():
 
     @CipherElite.on(events.NewMessage(
-        pattern=r"^\.del$",
-        incoming=True,
-        outgoing=True
-    ))
+    pattern=r"^\.del$"
+))
     async def delete_messages(event):
 
         # Owner and Sudo authorization
