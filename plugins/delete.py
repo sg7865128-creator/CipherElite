@@ -1,16 +1,20 @@
-
 from telethon import events
 from telethon.errors import FloodWaitError
-from plugins.bot import add_handler
+from utils.utils import CipherElite
 from utils.decorators import rishabh
+from plugins.bot import add_handler
 
-VERSION = "1.0"
+VERSION = "1.0.0"
 CATEGORY = "utilities"
 
 
 def init(client_instance):
-    add_handler(
-        "del",
-        [".del"],
-        "Delete your own messages from the current chat."
-    )
+    commands = [
+        ".del - Delete your own messages from the current chat"
+    ]
+    description = "Delete your own messages from the current chat"
+    add_handler("del", commands, description)
+
+
+async def register_commands():
+    pass
