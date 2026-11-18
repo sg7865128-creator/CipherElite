@@ -1,5 +1,4 @@
 import asyncio
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from telethon import events
@@ -10,171 +9,125 @@ from plugins.bot import add_handler
 VERSION = "1.0.0"
 CATEGORY = "utilities"
 
-DB_PATH = "replyall.db"
-
 active_scans = {}
+scan_results = {}
 
 
 def init(client_instance):
-    commands = [
-        ".ra - Scan members' messages from last 9 days",
-        ".sra - Stop active scan"
-    ]
     add_handler(
         "replyall",
-        commands,
-        "ReplyAll Member Message Scanner"
+        [
+            ".ra - Scan last 9 days",
+            ".ra all - Select all",
+            ".ra 1,2,3 - Select numbered messages",
+            ".sra - Stop scan",
+        ],
+        "ReplyAll Scanner"
     )
-
-
-def database():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS processed (
-            chat_id INTEGER,
-            user_id INTEGER,
-            message_id INTEGER,
-            PRIMARY KEY (chat_id, message_id)
-        )
-    """)
-    conn.commit()
-    return conn
-
-
-async def scan_chat(event, stop_event):
-    chat_id = event.chat_id
-    cutoff = datetime.now(timezone.utc) - timedelta(days=9)
-
-    selected = {}
-    conn = database()
-
-    try:
-        async for msg in event.client.iter_messages(chat_id):
-
-            if stop_event.is_set():
-                break
-
-            if not msg.date:
-                continue
-
-            if msg.date.replace(tzinfo=timezone.utc) < cutoff:
-                break
-
-            if not msg.sender_id:
-                continue
-
-            if msg.sender_id == event.sender_id:
-                continue
-
-            if msg.sender_id in selected:
-                continue
-
-            exists = conn.execute(
-                """
-                SELECT 1 FROM processed
-                WHERE chat_id=? AND message_id=?
-                """,
-                (chat_id, msg.id)
-            ).fetchone()
-
-            if exists:
-                continue
-
-            selected[msg.sender_id] = msg
-
-            conn.execute(
-                "INSERT OR IGNORE INTO processed VALUES (?, ?, ?)",
-                (chat_id, msg.sender_id, msg.id)
-            )
-            conn.commit()
-
-            await asyncio.sleep(0.15)
-
-    finally:
-        conn.close()
-
-    return selected
 
 
 async def register_commands():
 
     @CipherElite.on(events.NewMessage(pattern=r"^\.ra$"))
     @rishabh()
-    async def replyall_scan(event):
-
+    async def scan(event):
         chat_id = event.chat_id
 
         if chat_id in active_scans:
-            await event.reply("⚠️ Scan already running!")
             return
 
-        stop_event = asyncio.Event()
-        active_scans[chat_id] = stop_event
+        active_scans[chat_id] = True
+        cutoff = datetime.now(timezone.utc) - timedelta(days=9)
 
-        status = await event.reply(
-            "🔍 **ReplyAll Scanner Started**\n"
-            "📅 History: Last 9 days\n"
-            "⏳ Scanning messages..."
-        )
+        selected = []
+        bot_cache = {}
+        me = await event.client.get_me()
 
         try:
-            selected = await scan_chat(event, stop_event)
+            async for msg in event.client.iter_messages(chat_id):
+                if not active_scans.get(chat_id):
+                    return
 
-            if stop_event.is_set():
-                await status.edit("🛑 Scan stopped.")
-                return
+                if msg.date < cutoff:
+                    break
 
-            if not selected:
-                await status.edit(
-                    "❌ No eligible messages found."
-                )
-                return
+                uid = msg.sender_id
 
-            lines = [
-                "🎯 **ReplyAll Scan Complete**",
-                f"👥 Members found: `{len(selected)}`",
-                "",
-                "**Eligible members:**"
-            ]
+                if not uid or uid == me.id:
+                    continue
 
-            for index, (user_id, msg) in enumerate(
-                selected.items(), 1
-            ):
-                lines.append(
-                    f"{index}. User ID: `{user_id}`"
-                    f" | Message ID: `{msg.id}`"
-                )
+                if uid not in bot_cache:
+                    sender = await msg.get_sender()
+                    bot_cache[uid] = (
+                        sender is None or getattr(sender, "bot", False)
+                    )
 
-            lines.append("")
-            lines.append("💾 Records saved successfully.")
+                if bot_cache[uid]:
+                    continue
 
-            output = "\n".join(lines)
+                if any(x["user_id"] == uid for x in selected):
+                    continue
 
-            if len(output) > 4000:
-                output = output[:3900] + "\n\n...List truncated."
+                selected.append({
+                    "user_id": uid,
+                    "message_id": msg.id,
+                    "text": msg.text or "[Media]"
+                })
 
-            await status.edit(output)
+            scan_results[chat_id] = selected
 
-        except Exception as e:
-            await status.edit(
-                f"❌ Scanner error: `{str(e)[:200]}`"
+            sent = await event.reply(
+                f"✅ Scan Complete\n👥 Members Scanned: {len(selected)}"
             )
+            await asyncio.sleep(5)
+            await sent.delete()
 
         finally:
             active_scans.pop(chat_id, None)
 
-    @CipherElite.on(events.NewMessage(pattern=r"^\.sra$"))
+    @CipherElite.on(events.NewMessage(pattern=r"^\.ra (.+)$"))
     @rishabh()
-    async def stop_replyall(event):
-
+    async def select(event):
         chat_id = event.chat_id
+        data = scan_results.get(chat_id, [])
 
-        stop_event = active_scans.get(chat_id)
-
-        if not stop_event:
-            await event.reply("ℹ️ No active scan.")
+        if not data:
             return
 
-        stop_event.set()
+        arg = event.pattern_match.group(1).strip()
+        parts = arg.split(maxsplit=1)
+        choice = parts[0]
 
-        await event.reply("🛑 ReplyAll scan stopping...")
+        if choice.lower() == "all":
+            indexes = range(len(data))
+        else:
+            try:
+                indexes = [
+                    int(x.strip()) - 1
+                    for x in choice.split(",")
+                ]
+            except ValueError:
+                return
+
+        chosen = [
+            data[i] for i in indexes
+            if 0 <= i < len(data)
+        ]
+
+        if not chosen:
+            return
+
+        preview = "\n".join(
+            f"{i + 1}. {item['text'][:60]}"
+            for i, item in enumerate(chosen)
+        )
+
+        await event.reply(
+            f"📋 Selected: {len(chosen)}\n\n{preview}\n\n"
+            "Manual approval required."
+        )
+
+    @CipherElite.on(events.NewMessage(pattern=r"^\.sra$"))
+    @rishabh()
+    async def stop(event):
+        active_scans[event.chat_id] = False
